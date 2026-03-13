@@ -16,7 +16,9 @@ from signal import SIGINT, signal
 from time import sleep, time
 from typing import TYPE_CHECKING, Any, Iterable
 
-from evdev import AbsInfo, UInput, ecodes
+# from evdev import AbsInfo, UInput, ecodes
+import subprocess
+
 from gi import require_version
 
 from hints.constants import SOCKET_MESSAGE_SIZE, UNIX_DOMAIN_SOCKET_FILE
@@ -34,72 +36,41 @@ MOUSE_SERVICE_LOOP_MS_INTERVAL = 10
 config = load_config()
 
 
+_BUTTON_MAP = {
+    272: 1,  # BTN_LEFT
+    273: 3,  # BTN_RIGHT
+    274: 2,  # BTN_MIDDLE
+    275: 8,
+    276: 9,
+}
+
 class Mouse:
     """Mouse class for performing mouse actions (click, hover, move, etc).
 
-    This uses uinput to support both X11 and Wayland.
+    This uses xdotool
     """
 
     def __init__(self, abs_max_width=10000, abs_max_height=10000, write_pause=0.03):
-
-        keys = [button.value for button in MouseButton]
         self.write_pause = write_pause
-
-        self.relative_mouse = UInput(
-            {
-                ecodes.EV_KEY: keys,
-                ecodes.EV_REL: [
-                    ecodes.REL_X,
-                    ecodes.REL_Y,
-                    ecodes.REL_HWHEEL,
-                    ecodes.REL_WHEEL,
-                ],
-            },
-            name="Hints relative mouse",
-        )
-
-        self.absolute_mouse = UInput(
-            {
-                ecodes.EV_KEY: keys,
-                ecodes.EV_ABS: [
-                    (
-                        ecodes.ABS_X,
-                        AbsInfo(
-                            value=0,
-                            min=0,
-                            max=abs_max_width,
-                            fuzz=0,
-                            flat=0,
-                            resolution=0,
-                        ),
-                    ),
-                    (
-                        ecodes.ABS_Y,
-                        AbsInfo(
-                            value=0,
-                            min=0,
-                            max=abs_max_height,
-                            fuzz=0,
-                            flat=0,
-                            resolution=0,
-                        ),
-                    ),
-                ],
-            },
-            name="Hints absolute mouse",
-        )
+        self.abs_max_width = abs_max_width
+        self.abs_max_height = abs_max_height
 
     def scroll(self, x: int, y: int, *_args, **_kwargs):
-        """Scroll event.
+         """Scroll event.
 
         :param x: X scroll direction.
         :param y: Y scroll direction. :param *_args: Extra args to use
             the same interface as move. :param **_kwargs: Extra kwargs
             to use the same interface as move.
         """
-        self.relative_mouse.write(ecodes.EV_REL, ecodes.REL_HWHEEL, int(x))
-        self.relative_mouse.write(ecodes.EV_REL, ecodes.REL_WHEEL, int(y))
-        self.relative_mouse.syn()
+        if y < 0:
+            subprocess.run(["xdotool", "click", "4"])  # scroll up
+        elif y > 0:
+            subprocess.run(["xdotool", "click", "5"])  # scroll down
+        if x < 0:
+            subprocess.run(["xdotool", "click", "6"])  # scroll left
+        elif x > 0:
+            subprocess.run(["xdotool", "click", "7"])  # scroll right
 
     def move(self, x: int, y: int, absolute: bool = True):
         """Move event.
@@ -109,17 +80,10 @@ class Mouse:
         :param absolute: Whether to move the mouse using an absolute
             position.
         """
-
         if absolute:
-            self.absolute_mouse.write(ecodes.EV_ABS, ecodes.ABS_X, int(x))
-            self.absolute_mouse.write(ecodes.EV_ABS, ecodes.ABS_Y, int(y))
-            self.absolute_mouse.syn()
-
+            subprocess.run(["xdotool", "mousemove", str(int(x)), str(int(y))])
         else:
-            self.relative_mouse.write(ecodes.EV_REL, ecodes.REL_X, int(x))
-            self.relative_mouse.write(ecodes.EV_REL, ecodes.REL_Y, int(y))
-            self.relative_mouse.syn()
-
+            subprocess.run(["xdotool", "mousemove_relative", "--", str(int(x)), str(int(y))])
         sleep(self.write_pause)
 
     def click(
@@ -142,18 +106,13 @@ class Mouse:
         :param absolute: Whether the click position is absolute.
         """
         self.move(x, y, absolute=absolute)
-
+        btn = _BUTTON_MAP.get(button, 1)
         for _ in range(repeat):
-            for button_state in button_states:
-                self.relative_mouse.write(ecodes.EV_KEY, button, button_state)
-                self.relative_mouse.syn()
+            for state in button_states:
+                # state 1 = press, 0 = release (evdev KEY_DOWN/KEY_UP)
+                cmd = "mousedown" if state == 1 else "mouseup"
+                subprocess.run(["xdotool", cmd, str(btn)])
                 sleep(self.write_pause)
-
-        if absolute:
-            # small move to clear previous write incase the previous move wants
-            # to be repeated
-            self.move(x + 1, y, absolute=True)
-            self.move(x - 1, y, absolute=True)
 
     def do_mouse_action(
         self,
@@ -168,27 +127,18 @@ class Mouse:
         :param key: The key to perform a mouse action for.
         :param mode: The mouse mode.
         """
-        key_press_state.setdefault("start_time", time())
-
         sensitivity = 1
         rampup_time = 1
         mouse_navigation_action = self.move
-        left = "h"
-        right = "l"
-        up = "k"
-        down = "j"
+        left, right, up, down = "h", "l", "k", "j"
 
         if mode == MouseMode.MOVE.value:
             sensitivity = config["mouse_move_pixel_sensitivity"]
             rampup_time = config["mouse_move_rampup_time"]
             left = config["mouse_move_left"]
             right = config["mouse_move_right"]
-
-            # up and down are intentionally switched to keep the logic the same
-            # as scrol
             up = config["mouse_move_down"]
             down = config["mouse_move_up"]
-
             mouse_navigation_action = self.move
 
         elif mode == MouseMode.SCROLL.value:
@@ -201,7 +151,6 @@ class Mouse:
             mouse_navigation_action = self.scroll
 
         key_press_state.setdefault("sensitivity", sensitivity)
-
         if time() - key_press_state["start_time"] >= rampup_time:
             key_press_state["sensitivity"] += sensitivity
 
