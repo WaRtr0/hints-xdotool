@@ -43,7 +43,7 @@ Don't like the keybindings? That's ok, you can change them.
 Run the install script:
 
 ```
-curl -fsSL https://raw.githubusercontent.com/AlfredoSequeida/hints/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/WaRtr0/hints-xdotool/main/install.sh | bash
 ```
 
 ## Setup
